@@ -95,6 +95,8 @@ class DroneGUI:
         self.path_points: list[tuple[float, float]] = []
         self.drawing = False
         self.plan_running = False
+        self._joystick_offset = (0, 0)
+        self.jog_active = False
 
         self._build_widgets()
         self._poll_status()
@@ -160,24 +162,60 @@ class DroneGUI:
         self.run_button.configure(state=state)
         self.clear_button.configure(state=state)
         self._on_clear()
+        self.jog_active = False
+        self._reset_joystick()
 
     def _on_canvas_press(self, event: tk.Event) -> None:
-        if self.mode.get() != "planning":
-            return
-        self._on_clear()
-        self.path_points = [(event.x, event.y)]
-        self.drawing = True
+        if self.mode.get() == "planning":
+            self._on_clear()
+            self.path_points = [(event.x, event.y)]
+            self.drawing = True
+        else:
+            self.jog_active = True
+            self._update_joystick(event.x, event.y)
+            self._jog_tick()
 
     def _on_canvas_drag(self, event: tk.Event) -> None:
-        if self.mode.get() != "planning" or not self.drawing:
-            return
-        last = self.path_points[-1]
-        if ((event.x - last[0]) ** 2 + (event.y - last[1]) ** 2) ** 0.5 >= WAYPOINT_MIN_PX:
-            self.canvas.create_line(*last, event.x, event.y, fill="blue", width=2, tags="path")
-            self.path_points.append((event.x, event.y))
+        if self.mode.get() == "planning":
+            if not self.drawing:
+                return
+            last = self.path_points[-1]
+            if ((event.x - last[0]) ** 2 + (event.y - last[1]) ** 2) ** 0.5 >= WAYPOINT_MIN_PX:
+                self.canvas.create_line(*last, event.x, event.y, fill="blue", width=2,
+                                         tags="path")
+                self.path_points.append((event.x, event.y))
+        else:
+            self._update_joystick(event.x, event.y)
 
     def _on_canvas_release(self, event: tk.Event) -> None:
         self.drawing = False
+        self.jog_active = False
+        self._reset_joystick()
+
+    def _update_joystick(self, x: float, y: float) -> None:
+        center = CANVAS_SIZE // 2
+        dx = max(-JOYSTICK_RADIUS_PX, min(JOYSTICK_RADIUS_PX, x - center))
+        dy = max(-JOYSTICK_RADIUS_PX, min(JOYSTICK_RADIUS_PX, y - center))
+        self._joystick_offset = (dx, dy)
+        self._draw_joystick(center + dx, center + dy)
+
+    def _reset_joystick(self) -> None:
+        self._joystick_offset = (0, 0)
+        center = CANVAS_SIZE // 2
+        self._draw_joystick(center, center)
+
+    def _draw_joystick(self, x: float, y: float) -> None:
+        self.canvas.delete("joystick")
+        self.canvas.create_oval(x - 8, y - 8, x + 8, y + 8, fill="orange", tags="joystick")
+
+    def _jog_tick(self) -> None:
+        if not self.jog_active:
+            return
+        dx, dy = self._joystick_offset
+        for direction, power in offset_to_moves(dx, dy, JOYSTICK_RADIUS_PX):
+            self.worker.enqueue(self.drone.move, direction, seconds=JOG_DURATION_S,
+                                 power=power, label=f"jog {direction} {power}")
+        self.root.after(JOG_INTERVAL_MS, self._jog_tick)
 
     def _on_run(self) -> None:
         if self.mode.get() != "planning" or len(self.path_points) < 2:
