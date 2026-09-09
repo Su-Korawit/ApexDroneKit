@@ -84,6 +84,38 @@ class DroneWorkerTests(unittest.TestCase):
         time.sleep(0.2)
         self.assertNotIn("second", ran)
 
+    def test_stop_plan_announces_itself(self):
+        self.worker.stop_plan()
+        self.assertIn("Plan stopped - remaining steps dropped.",
+                      self.worker.drain_status())
+
+    def test_flush_drops_unstarted_steps_without_a_status_line(self):
+        started = threading.Event()
+        release = threading.Event()
+        ran = []
+
+        def slow_first():
+            started.set()
+            release.wait(timeout=2)
+            ran.append("first")
+
+        self.worker.enqueue(slow_first, label="first")
+        self.worker.enqueue(lambda: ran.append("second"), label="second")
+        self.assertTrue(_wait_for(started.is_set))
+        self.worker.flush()
+        release.set()
+        self.assertTrue(_wait_for(lambda: "first" in ran, timeout=1))
+        self.assertTrue(_wait_for(self.worker.is_idle, timeout=1))
+        self.assertNotIn("second", ran)
+        self.assertNotIn("Plan stopped - remaining steps dropped.",
+                         self.worker.drain_status())
+
+    def test_enqueue_after_flush_still_runs(self):
+        self.worker.flush()
+        ran = []
+        self.worker.enqueue(lambda: ran.append("after"), label="after")
+        self.assertTrue(_wait_for(lambda: ran == ["after"]))
+
     def test_emergency_stop_runs_even_while_queue_busy(self):
         blocker = threading.Event()
         started = threading.Event()

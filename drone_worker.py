@@ -49,10 +49,19 @@ class DroneWorker:
         for step in steps:
             self._command_queue.put((generation, step))
 
-    def stop_plan(self) -> None:
-        """Drop every not-yet-started queued step. A step already running
-        finishes normally - it cannot be interrupted mid-command."""
+    def flush(self) -> None:
+        """Silently drop every not-yet-started queued step. A step already
+        running finishes normally - it cannot be interrupted mid-command.
+
+        Same mechanism as stop_plan(), but pushes no status line, so the GUI
+        can drop a realtime jog backlog on every mouse release without
+        spamming the log."""
         self._generation += 1
+
+    def stop_plan(self) -> None:
+        """Drop every not-yet-started queued step and announce it in the log.
+        A step already running finishes normally."""
+        self.flush()
         self._status_queue.put("Plan stopped - remaining steps dropped.")
 
     def emergency_stop(self) -> None:
@@ -91,7 +100,7 @@ class DroneWorker:
             except queue.Empty:
                 continue
             if generation != self._generation:
-                continue  # dropped by stop_plan()
+                continue  # dropped by stop_plan()/flush()
             self._busy.set()
             try:
                 step.fn(*step.args, **step.kwargs)

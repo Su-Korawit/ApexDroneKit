@@ -11,9 +11,10 @@ See docs/superpowers/specs/2026-09-09-drag-drone-gui-design.md for the design.
 from __future__ import annotations
 
 from apexdrone import DIST_MAX_CM, DIST_MIN_CM
+from drone_worker import PlannedStep
 
 LINK = "ble"                     # "sim" to practise without a drone, "ble" to fly for real
-DRONE = "APEX_USART_751F02"      # your drone's name from scan_drones.py
+DRONE = "APEX_USART_218001"      # your drone's name from scan_drones.py
 
 CANVAS_SIZE = 400
 PX_PER_CM = 3
@@ -79,11 +80,26 @@ def offset_to_moves(dx_px: float, dy_px: float, radius_px: float) -> list[tuple[
     return moves
 
 
+def commands_to_steps(drone, commands: list[tuple[str, float]]) -> list[PlannedStep]:
+    """Turn path_to_commands() output into queueable PlannedStep objects.
+
+    Each (direction, distance_cm) pair becomes a call to the matching
+    Drone.forward()/back()/up()/down() method with its `dist` keyword - the
+    glue between the mouse and the motors, kept out of the GUI so it can be
+    unit tested without tkinter or a drone.
+    """
+    return [
+        PlannedStep(getattr(drone, direction), kwargs={"dist": dist},
+                    label=f"{direction} {dist:.0f}cm")
+        for direction, dist in commands
+    ]
+
+
 import tkinter as tk
 from tkinter import ttk
 
 from apexdrone import Drone
-from drone_worker import DroneWorker, PlannedStep
+from drone_worker import DroneWorker
 
 
 class DroneGUI:
@@ -97,6 +113,7 @@ class DroneGUI:
         self.plan_running = False
         self._joystick_offset = (0, 0)
         self.jog_active = False
+        self._jog_after_id: str | None = None
 
         self._build_widgets()
         self._poll_status()
@@ -155,6 +172,10 @@ class DroneGUI:
 
     def _on_emergency(self) -> None:
         self.worker.emergency_stop()
+        # Cutting the motors is not enough on its own: whatever was queued
+        # would resume flying once the emergency window clears.
+        self.worker.flush()
+        self._cancel_jog_loop()
 
     def _on_mode_change(self) -> None:
         planning = self.mode.get() == "planning"
@@ -162,7 +183,7 @@ class DroneGUI:
         self.run_button.configure(state=state)
         self.clear_button.configure(state=state)
         self._on_clear()
-        self.jog_active = False
+        self._cancel_jog_loop()
         self._reset_joystick()
 
     def _on_canvas_press(self, event: tk.Event) -> None:
@@ -171,6 +192,7 @@ class DroneGUI:
             self.path_points = [(event.x, event.y)]
             self.drawing = True
         else:
+            self._cancel_jog_loop()  # never run two jog chains at once
             self.jog_active = True
             self._update_joystick(event.x, event.y)
             self._jog_tick()
@@ -189,7 +211,14 @@ class DroneGUI:
 
     def _on_canvas_release(self, event: tk.Event) -> None:
         self.drawing = False
-        self.jog_active = False
+        if self.mode.get() == "planning":
+            # Leave the drawn path alone - redrawing the joystick dot here
+            # would paint it on top of the path the user just finished.
+            return
+        self._cancel_jog_loop()
+        # Drop jog commands queued but not yet started, so the drone stops
+        # shortly after the mouse does instead of flying out the backlog.
+        self.worker.flush()
         self._reset_joystick()
 
     def _update_joystick(self, x: float, y: float) -> None:
@@ -208,14 +237,28 @@ class DroneGUI:
         self.canvas.delete("joystick")
         self.canvas.create_oval(x - 8, y - 8, x + 8, y + 8, fill="orange", tags="joystick")
 
+    def _cancel_jog_loop(self) -> None:
+        """Stop the realtime jog loop: no new ticks, and no stale scheduled
+        tick left alive to start a second chain on the next press."""
+        self.jog_active = False
+        if self._jog_after_id is not None:
+            self.root.after_cancel(self._jog_after_id)
+            self._jog_after_id = None
+
     def _jog_tick(self) -> None:
+        self._jog_after_id = None
         if not self.jog_active:
             return
-        dx, dy = self._joystick_offset
-        for direction, power in offset_to_moves(dx, dy, JOYSTICK_RADIUS_PX):
-            self.worker.enqueue(self.drone.move, direction, seconds=JOG_DURATION_S,
-                                 power=power, label=f"jog {direction} {power}")
-        self.root.after(JOG_INTERVAL_MS, self._jog_tick)
+        # Only queue a new jog once the previous one has been consumed: a
+        # move(seconds=0.15) takes far longer than JOG_INTERVAL_MS to run, so
+        # queueing every tick would build a backlog the drone flies out long
+        # after the mouse stops moving.
+        if self.worker.is_idle():
+            dx, dy = self._joystick_offset
+            for direction, power in offset_to_moves(dx, dy, JOYSTICK_RADIUS_PX):
+                self.worker.enqueue(self.drone.move, direction, seconds=JOG_DURATION_S,
+                                     power=power, label=f"jog {direction} {power}")
+        self._jog_after_id = self.root.after(JOG_INTERVAL_MS, self._jog_tick)
 
     def _on_run(self) -> None:
         if self.mode.get() != "planning" or len(self.path_points) < 2:
@@ -225,12 +268,7 @@ class DroneGUI:
         if not commands:
             self.log.insert("end", "Path too short to produce any commands.")
             return
-        steps = [
-            PlannedStep(getattr(self.drone, direction), kwargs={"dist": dist},
-                        label=f"{direction} {dist:.0f}cm")
-            for direction, dist in commands
-        ]
-        self.worker.enqueue_plan(steps)
+        self.worker.enqueue_plan(commands_to_steps(self.drone, commands))
         self.plan_running = True
         self.stop_button.configure(state="normal")
         self.run_button.configure(state="disabled")
