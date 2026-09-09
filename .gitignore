@@ -6,3 +6,4 @@ __pycache__/
 venv/
 *.egg-info/
 User Manual G149.pdf
+.superpowers/
