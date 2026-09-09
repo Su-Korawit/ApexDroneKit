@@ -13,7 +13,7 @@ from __future__ import annotations
 from apexdrone import DIST_MAX_CM, DIST_MIN_CM
 
 LINK = "ble"                     # "sim" to practise without a drone, "ble" to fly for real
-DRONE = "APEX_USART_218001"      # your drone's name from scan_drones.py
+DRONE = "APEX_USART_751F02"      # your drone's name from scan_drones.py
 
 CANVAS_SIZE = 400
 PX_PER_CM = 3
