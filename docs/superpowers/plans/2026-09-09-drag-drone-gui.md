@@ -17,8 +17,17 @@
 - `production.py` must not open a window merely by being imported — GUI startup happens only inside `if __name__ == "__main__":` (`main()`), so its pure functions stay importable by tests.
 - Distances sent to `Drone.forward()/back()/up()/down()` must respect `apexdrone.DIST_MIN_CM` (10) and `apexdrone.DIST_MAX_CM` (180).
 - Emergency Stop must bypass the command queue entirely and stay clickable no matter what else is queued or running.
-- Connection constants at the top of `production.py`: `LINK = "sim"`, `DRONE = ""`, matching `console.py`'s pattern — edited by hand before flying for real.
-- Tests run with the standard library: `python -m unittest <module> -v` from the project root (no pytest install needed or expected).
+- Connection constants at the top of `production.py`: `LINK = "ble"`, `DRONE = "APEX_USART_751F02"` — the same real drone `console.py` is already configured for in this repo.
+- Tests run with the standard library: `python -m unittest <module> -v` from the project root (no pytest install needed or expected). These are unaffected by the real-drone link, since Tasks 1-2 test pure functions and a `FakeDrone`, never a live connection.
+
+**Safety — this plan flies a real drone.** Before any manual verification step in Tasks 3-5:
+fly in an open space at least 3 m clear of people/objects, with 2 m of ceiling clearance
+(`takeoff()` climbs to ~110 cm). Closing the window lands the drone but is **not** an
+emergency stop — if the motors won't stop, unplug the battery (`README.md` mentions an
+`emergency_stop.py` script, but it does not exist yet in this repo, so unplugging is the
+real fallback). If testing on a bench with propellers off, use the GUI's Emergency Stop
+button instead of Land, since `land()` never registers as airborne with no propellers.
+See `README.md`'s "Safety - read before flying" section for the full list.
 
 ---
 
@@ -315,7 +324,7 @@ EOF
 - Produces:
   - `path_to_commands(points: list[tuple[float, float]], px_per_cm: float) -> list[tuple[str, float]]` — direction is one of `"forward"`, `"back"`, `"up"`, `"down"`.
   - `offset_to_moves(dx_px: float, dy_px: float, radius_px: float) -> list[tuple[str, int]]` — direction is one of `"forward"`, `"back"`, `"up"`, `"down"`; power is `0..100`.
-  - Constants: `CANVAS_SIZE = 400`, `PX_PER_CM = 3`, `WAYPOINT_MIN_PX = 20`, `JOYSTICK_RADIUS_PX = 120`, `JOG_INTERVAL_MS = 150`, `JOG_DURATION_S = 0.15`, `JOG_MIN_POWER = 15`, `JOG_MAX_POWER = 100`, `LINK = "sim"`, `DRONE = ""`.
+  - Constants: `CANVAS_SIZE = 400`, `PX_PER_CM = 3`, `WAYPOINT_MIN_PX = 20`, `JOYSTICK_RADIUS_PX = 120`, `JOG_INTERVAL_MS = 150`, `JOG_DURATION_S = 0.15`, `JOG_MIN_POWER = 15`, `JOG_MAX_POWER = 100`, `LINK = "ble"`, `DRONE = "APEX_USART_751F02"`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -411,8 +420,8 @@ from __future__ import annotations
 
 from apexdrone import DIST_MAX_CM, DIST_MIN_CM
 
-LINK = "sim"     # "sim" to practise, "ble" to fly for real
-DRONE = ""       # your drone's name from scan_drones.py, e.g. "APEX_USART_C73303"
+LINK = "ble"                     # "sim" to practise without a drone, "ble" to fly for real
+DRONE = "APEX_USART_751F02"      # your drone's name from scan_drones.py
 
 CANVAS_SIZE = 400
 PX_PER_CM = 3
@@ -654,19 +663,29 @@ Also move the existing `LINK`/`DRONE` constants (from Task 2) so they still sit 
 - [ ] **Step 2: Run the unit tests to confirm nothing broke**
 
 Run: `python -m unittest test_production_logic -v`
-Expected: PASS (10 tests) — adding `tkinter` imports and the `DroneGUI` class must not affect the pure functions.
+Expected: PASS (12 tests) — adding `tkinter` imports and the `DroneGUI` class must not affect the pure functions.
 
 - [ ] **Step 3: Manual verification**
 
-Run: `python production.py`
+Switch the drone on and place it in an open space with 3 m clearance and 2 m of ceiling
+(see the Safety note under Global Constraints). Run: `python production.py`
 
 Check:
-- A window opens titled "APEX Drone - Drag Control", log shows "Practice mode - no real drone..." (from `_SimLink.open()`'s print — note: that particular line goes to stdout via `print()`, not the log panel; the log panel will show worker status lines like "takeoff: done" once you click a button).
-- Click **Takeoff** — log panel shows `takeoff: done` within a second or two (no window freeze).
-- Click **Land** — log panel shows `land: done`.
-- Click **EMERGENCY STOP** — log panel shows `EMERGENCY STOP sent.` immediately.
-- Switch to **Realtime** — Run and Clear buttons become disabled. Switch back to **Planning** — they re-enable.
-- Close the window — the terminal prints "Practice mode finished." and the process exits cleanly (no hang).
+- The terminal shows `Connected to APEX_USART_751F02 (protocol ...)` (from `_BleLink.open()`)
+  before the window finishes opening — if it instead prints "No drone named ... found",
+  the drone is off, out of range, or already connected to something else; fix that before
+  continuing (see `README.md`'s Troubleshooting table).
+- The window opens titled "APEX Drone - Drag Control". The status bar shows a battery
+  voltage and "on ground" once the first telemetry packet arrives.
+- Click **Takeoff** — the drone physically takes off to ~110 cm; log panel shows
+  `takeoff: done` within a few seconds (no window freeze).
+- Click **Land** — the drone lands; log panel shows `land: done`.
+- Click **EMERGENCY STOP** — motors cut immediately (drone drops if airborne — only test
+  this one on the ground or hovering low); log panel shows `EMERGENCY STOP sent.`.
+- Switch to **Realtime** — Run and Clear buttons become disabled. Switch back to
+  **Planning** — they re-enable.
+- Close the window — the drone lands first (see `Drone.close()`), the terminal shows it
+  disconnecting, and the process exits cleanly (no hang).
 
 - [ ] **Step 4: Commit**
 
@@ -775,14 +794,24 @@ Expected: PASS (18 tests total)
 
 - [ ] **Step 3: Manual verification**
 
-Run: `python production.py`, stay in **Planning** mode.
+The drone will physically fly each command in the drawn path — recheck the 3 m/2 m
+clearance from the Safety note before starting. Run: `python production.py`, take off
+first, then stay in **Planning** mode.
 
 Check:
-- Drag a diagonal line on the canvas — a blue polyline follows the mouse.
-- Release the mouse, click **Run** — Run/Clear disable, Stop enables; the log panel fills with lines like `forward 40cm: done`, `up 20cm: done` in order, ending with Run/Clear re-enabling automatically once the queue drains.
-- Draw a new path, click Run, then click **Stop** partway through — log shows `Plan stopped - remaining steps dropped.`, the step already in flight finishes, no further `...: done` lines appear afterward, and Run/Clear re-enable.
-- Click **Run** with no path drawn — log shows "Draw a path before pressing Run." and nothing is queued.
+- Drag a short diagonal line on the canvas (keep it small for the first test — a few cm of
+  travel) — a blue polyline follows the mouse.
+- Release the mouse, click **Run** — Run/Clear disable, Stop enables; the drone physically
+  moves through each segment while the log panel fills with lines like `forward 40cm: done`,
+  `up 20cm: done` in order, ending with Run/Clear re-enabling automatically once the queue
+  drains.
+- Draw a new path, click Run, then click **Stop** partway through — the drone finishes the
+  segment already in progress and then holds; log shows `Plan stopped - remaining steps
+  dropped.`, no further `...: done` lines appear afterward, and Run/Clear re-enable.
+- Click **Run** with no path drawn — log shows "Draw a path before pressing Run." and
+  nothing is queued.
 - Click **Clear** after drawing (not running) — the blue line disappears.
+- Land the drone (**Land** button) once done testing.
 
 - [ ] **Step 4: Commit**
 
@@ -898,15 +927,24 @@ Expected: PASS (18 tests total)
 
 - [ ] **Step 3: Manual verification**
 
-Run: `python production.py`, switch to **Realtime** mode.
+Dragging the joystick now jogs a real, airborne drone — recheck the 3 m/2 m clearance from
+the Safety note and keep a hand near Emergency Stop. Run: `python production.py`, take off,
+then switch to **Realtime** mode.
 
 Check:
 - An orange dot sits at the canvas center.
-- Press and drag the mouse to the right — the dot follows (clamped to the joystick radius), and the log panel starts showing repeated lines like `jog forward 40: done` roughly every 150ms.
-- Drag up-and-right simultaneously — log shows interleaved `jog forward ...` and `jog up ...` lines.
-- Release the mouse — the dot springs back to center and no new `jog ...` lines appear (the last one or two already queued still finish).
-- Drag only a few pixels from center — no `jog ...` lines appear at all (below `JOG_MIN_POWER`).
-- Switch to Planning mid-drag (release first) — the joystick dot disappears/resets and dragging on the canvas now draws a path instead.
+- Press and drag the mouse slightly to the right — the dot follows (clamped to the joystick
+  radius), the drone noticeably leans/drifts forward, and the log panel shows repeated lines
+  like `jog forward 40: done` roughly every 150ms.
+- Drag up-and-right simultaneously — the drone climbs while drifting forward; log shows
+  interleaved `jog forward ...` and `jog up ...` lines.
+- Release the mouse — the dot springs back to center, the drone returns to a hover, and no
+  new `jog ...` lines appear (the last one or two already queued still finish).
+- Drag only a few pixels from center — the drone stays put; no `jog ...` lines appear at all
+  (below `JOG_MIN_POWER`).
+- Switch to Planning mid-drag (release first) — the joystick dot disappears/resets and
+  dragging on the canvas now draws a path instead.
+- Land the drone (**Land** button) once done testing.
 
 - [ ] **Step 4: Commit**
 
