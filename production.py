@@ -118,6 +118,10 @@ class DroneGUI:
         self.canvas.pack(padx=8, pady=4)
         self._draw_grid()
 
+        self.canvas.bind("<ButtonPress-1>", self._on_canvas_press)
+        self.canvas.bind("<B1-Motion>", self._on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
+
         controls = ttk.Frame(self.root)
         controls.pack(fill="x", padx=8, pady=4)
         self.run_button = ttk.Button(controls, text="Run", command=self._on_run)
@@ -157,12 +161,53 @@ class DroneGUI:
         self.clear_button.configure(state=state)
         self._on_clear()
 
-    # Planning/Realtime button handlers are added in later tasks.
+    def _on_canvas_press(self, event: tk.Event) -> None:
+        if self.mode.get() != "planning":
+            return
+        self._on_clear()
+        self.path_points = [(event.x, event.y)]
+        self.drawing = True
+
+    def _on_canvas_drag(self, event: tk.Event) -> None:
+        if self.mode.get() != "planning" or not self.drawing:
+            return
+        last = self.path_points[-1]
+        if ((event.x - last[0]) ** 2 + (event.y - last[1]) ** 2) ** 0.5 >= WAYPOINT_MIN_PX:
+            self.canvas.create_line(*last, event.x, event.y, fill="blue", width=2, tags="path")
+            self.path_points.append((event.x, event.y))
+
+    def _on_canvas_release(self, event: tk.Event) -> None:
+        self.drawing = False
+
     def _on_run(self) -> None:
-        pass
+        if self.mode.get() != "planning" or len(self.path_points) < 2:
+            self.log.insert("end", "Draw a path before pressing Run.")
+            return
+        commands = path_to_commands(self.path_points, PX_PER_CM)
+        if not commands:
+            self.log.insert("end", "Path too short to produce any commands.")
+            return
+        steps = [
+            PlannedStep(getattr(self.drone, direction), kwargs={"dist": dist},
+                        label=f"{direction} {dist:.0f}cm")
+            for direction, dist in commands
+        ]
+        self.worker.enqueue_plan(steps)
+        self.plan_running = True
+        self.stop_button.configure(state="normal")
+        self.run_button.configure(state="disabled")
+        self.clear_button.configure(state="disabled")
 
     def _on_stop_plan(self) -> None:
-        pass
+        self.worker.stop_plan()
+        self._finish_plan()
+
+    def _finish_plan(self) -> None:
+        self.plan_running = False
+        self.stop_button.configure(state="disabled")
+        if self.mode.get() == "planning":
+            self.run_button.configure(state="normal")
+            self.clear_button.configure(state="normal")
 
     def _on_clear(self) -> None:
         self.canvas.delete("path")
@@ -173,6 +218,8 @@ class DroneGUI:
         for line in self.worker.drain_status():
             self.log.insert("end", line)
             self.log.yview_moveto(1.0)
+        if self.plan_running and self.worker.is_idle():
+            self._finish_plan()
         info = self.drone.status()
         if info is not None:
             self.status_var.set(
