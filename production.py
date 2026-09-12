@@ -241,9 +241,22 @@ class DroneGUI:
         self._on_mode_change()
 
     def _draw_grid(self) -> None:
-        center = CANVAS_SIZE // 2
-        self.canvas.create_line(0, center, CANVAS_SIZE, center, fill="#ccc")
-        self.canvas.create_line(center, 0, center, CANVAS_SIZE, fill="#ccc")
+        for position, cm, major in grid_lines():
+            colour = "#b0b0b0" if major else "#ececec"
+            self.canvas.create_line(position, GRID_MIN_PX, position, GRID_MAX_PX,
+                                     fill=colour, tags="grid")
+            self.canvas.create_line(GRID_MIN_PX, position, GRID_MAX_PX, position,
+                                     fill=colour, tags="grid")
+            if major and cm != 0:
+                self.canvas.create_text(position, GRID_MAX_PX + 8, text=f"{cm:+d}",
+                                         font=("Helvetica", 7), fill="#808080",
+                                         tags="grid")
+                # Canvas y grows downward, altitude upward, so the sign flips.
+                self.canvas.create_text(GRID_MIN_PX - 12, position, text=f"{-cm:+d}",
+                                         font=("Helvetica", 7), fill="#808080",
+                                         tags="grid")
+        self.canvas.create_text(GRID_MIN_PX - 12, GRID_MAX_PX + 8, text="cm",
+                                 font=("Helvetica", 7), fill="#808080", tags="grid")
 
     def _on_takeoff(self) -> None:
         self.worker.enqueue(self.drone.takeoff, label="takeoff")
