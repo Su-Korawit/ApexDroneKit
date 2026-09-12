@@ -276,9 +276,12 @@ class DroneGUI:
         state = "normal" if planning else "disabled"
         self.run_button.configure(state=state)
         self.clear_button.configure(state=state)
-        self._on_clear()
+        self.canvas.itemconfigure("path", state="normal" if planning else "hidden")
         self._cancel_jog_loop()
-        self._reset_joystick()
+        if planning:
+            self.canvas.delete("joystick")
+        else:
+            self._reset_joystick()
 
     def _on_canvas_press(self, event: tk.Event) -> None:
         if self.mode.get() != "planning":
@@ -412,10 +415,10 @@ class DroneGUI:
         self._jog_after_id = self.root.after(JOG_INTERVAL_MS, self._jog_tick)
 
     def _on_run(self) -> None:
-        if self.mode.get() != "planning" or len(self.path_points) < 2:
+        if self.mode.get() != "planning" or len(self.nodes) < 2:
             self.log.insert("end", "Draw a path before pressing Run.")
             return
-        commands = path_to_commands(self.path_points, PX_PER_CM)
+        commands = path_to_commands(self.nodes, PX_PER_CM)
         if not commands:
             self.log.insert("end", "Path too short to produce any commands.")
             return
@@ -438,8 +441,8 @@ class DroneGUI:
 
     def _on_clear(self) -> None:
         self.canvas.delete("path")
-        self.path_points = []
-        self.drawing = False
+        self.nodes = []
+        self._drag = None
 
     def _poll_status(self) -> None:
         for line in self.worker.drain_status():
