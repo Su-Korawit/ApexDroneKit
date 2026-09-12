@@ -189,8 +189,8 @@ class DroneGUI:
         self.drone = drone
         self.worker = worker
         self.mode = tk.StringVar(value="planning")
-        self.path_points: list[tuple[float, float]] = []
-        self.drawing = False
+        self.nodes: list[tuple[int, int]] = []
+        self._drag: dict | None = None
         self.plan_running = False
         self._joystick_offset = (0, 0)
         self.jog_active = False
@@ -281,39 +281,96 @@ class DroneGUI:
         self._reset_joystick()
 
     def _on_canvas_press(self, event: tk.Event) -> None:
-        if self.mode.get() == "planning":
-            self._on_clear()
-            self.path_points = [(event.x, event.y)]
-            self.drawing = True
-        else:
+        if self.mode.get() != "planning":
             self._cancel_jog_loop()  # never run two jog chains at once
             self.jog_active = True
             self._update_joystick(event.x, event.y)
             self._jog_tick()
+            return
+        if self.plan_running:
+            return
+        hit = find_hit(self.nodes, event.x, event.y)
+        point = snap_to_grid(event.x, event.y)
+        if hit is None and self.nodes:
+            self.log.insert("end", "Drag from an end point to extend, "
+                                   "or a leg's middle to bend it.")
+            return
+        if hit is None:
+            self._drag = {"kind": "first", "anchor": point, "preview": point}
+        elif hit[0] == "end":
+            self._drag = {"kind": "extend", "at": hit[1], "preview": point}
+        else:
+            self._drag = {"kind": "bend", "leg": hit[1], "preview": point}
+        self._redraw_path()
 
     def _on_canvas_drag(self, event: tk.Event) -> None:
-        if self.mode.get() == "planning":
-            if not self.drawing:
-                return
-            last = self.path_points[-1]
-            if ((event.x - last[0]) ** 2 + (event.y - last[1]) ** 2) ** 0.5 >= WAYPOINT_MIN_PX:
-                self.canvas.create_line(*last, event.x, event.y, fill="blue", width=2,
-                                         tags="path")
-                self.path_points.append((event.x, event.y))
-        else:
+        if self.mode.get() != "planning":
             self._update_joystick(event.x, event.y)
+            return
+        if self._drag is None:
+            return
+        self._drag["preview"] = snap_to_grid(event.x, event.y)
+        self._redraw_path()
 
     def _on_canvas_release(self, event: tk.Event) -> None:
-        self.drawing = False
-        if self.mode.get() == "planning":
-            # Leave the drawn path alone - redrawing the joystick dot here
-            # would paint it on top of the path the user just finished.
+        if self.mode.get() != "planning":
+            self._cancel_jog_loop()
+            # Drop jog commands queued but not yet started, so the drone stops
+            # shortly after the mouse does instead of flying out the backlog.
+            self.worker.flush()
+            self._reset_joystick()
             return
-        self._cancel_jog_loop()
-        # Drop jog commands queued but not yet started, so the drone stops
-        # shortly after the mouse does instead of flying out the backlog.
-        self.worker.flush()
-        self._reset_joystick()
+        if self._drag is None:
+            return
+        point = snap_to_grid(event.x, event.y)
+        kind = self._drag["kind"]
+        if kind == "first":
+            if point != self._drag["anchor"]:
+                self.nodes = [self._drag["anchor"], point]
+        elif kind == "extend":
+            if point not in self.nodes:
+                if self._drag["at"] == 0:
+                    self.nodes.insert(0, point)
+                else:
+                    self.nodes.append(point)
+        else:
+            leg = self._drag["leg"]
+            if point not in (self.nodes[leg], self.nodes[leg + 1]):
+                self.nodes.insert(leg + 1, point)
+        self._drag = None
+        self._redraw_path()
+
+    def _redraw_path(self) -> None:
+        self.canvas.delete("path")
+        if self.nodes:
+            ghost = commands_to_ghost_points(
+                path_to_commands(self.nodes, PX_PER_CM), self.nodes[0])
+            if len(ghost) > 1:
+                self.canvas.create_line(*[c for point in ghost for c in point],
+                                         fill="#c9c9c9", width=6, tags="path")
+            self.canvas.create_line(*[c for node in self.nodes for c in node],
+                                     fill="blue", width=2, tags="path")
+            for index, (x, y) in enumerate(self.nodes):
+                is_end = index in (0, len(self.nodes) - 1)
+                self.canvas.create_oval(x - 5, y - 5, x + 5, y + 5,
+                                         fill="red" if is_end else "white",
+                                         outline="blue", tags="path")
+            for a, b in zip(self.nodes, self.nodes[1:]):
+                mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+                self.canvas.create_rectangle(mx - 3, my - 3, mx + 3, my + 3,
+                                              fill="orange", outline="", tags="path")
+        if self._drag is not None:
+            preview = self._drag["preview"]
+            if self._drag["kind"] == "bend":
+                leg = self._drag["leg"]
+                anchors = (self.nodes[leg], self.nodes[leg + 1])
+            elif self._drag["kind"] == "extend":
+                anchors = (self.nodes[self._drag["at"]],)
+            else:
+                anchors = (self._drag["anchor"],)
+            for anchor in anchors:
+                self.canvas.create_line(*anchor, *preview, fill="gray",
+                                         dash=(3, 3), tags="path")
 
     def _update_joystick(self, x: float, y: float) -> None:
         center = CANVAS_SIZE // 2
