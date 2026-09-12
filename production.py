@@ -15,8 +15,7 @@ import math
 from apexdrone import DIST_MAX_CM, DIST_MIN_CM
 from drone_worker import PlannedStep
 
-# LINK = "ble"                     # "sim" to practise without a drone, "ble" to fly for real
-LINK = "sim"                     # "sim" to practise without a drone, "ble" to fly for real
+LINK = "ble"                     # "sim" to practise without a drone, "ble" to fly for real
 DRONE = "APEX_USART_218001"      # your drone's name from scan_drones.py
 
 CANVAS_SIZE = 400
