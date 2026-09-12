@@ -1,6 +1,9 @@
 import unittest
 
-from production import commands_to_steps, path_to_commands, offset_to_moves
+from production import (CANVAS_CENTER, GRID_MAX_PX, GRID_MIN_PX, GRID_STEP_PX,
+                        PX_PER_CM, commands_to_ghost_points, commands_to_steps,
+                        find_hit, grid_lines, offset_to_moves, path_to_commands,
+                        snap_to_grid)
 
 
 class PathToCommandsTests(unittest.TestCase):
@@ -113,6 +116,112 @@ class CommandsToStepsTests(unittest.TestCase):
         for step in commands_to_steps(drone, commands):
             step.fn(*step.args, **step.kwargs)
         self.assertEqual(len(drone.calls), len(commands))
+
+
+class SnapToGridTests(unittest.TestCase):
+    def test_centre_snaps_to_itself(self):
+        self.assertEqual(snap_to_grid(CANVAS_CENTER, CANVAS_CENTER),
+                         (CANVAS_CENTER, CANVAS_CENTER))
+
+    def test_rounds_to_the_nearest_intersection(self):
+        self.assertEqual(snap_to_grid(CANVAS_CENTER + 11, CANVAS_CENTER - 11),
+                         (CANVAS_CENTER, CANVAS_CENTER))
+        self.assertEqual(snap_to_grid(CANVAS_CENTER + 19, CANVAS_CENTER - 19),
+                         (CANVAS_CENTER + GRID_STEP_PX, CANVAS_CENTER - GRID_STEP_PX))
+
+    def test_clamps_inside_the_drawable_grid(self):
+        self.assertEqual(snap_to_grid(-500, 9999), (GRID_MIN_PX, GRID_MAX_PX))
+
+    def test_every_snapped_point_sits_on_an_intersection(self):
+        for raw in (0, 37, 88, 150, 201, 260, 333, 400):
+            x, y = snap_to_grid(raw, raw)
+            self.assertEqual((x - CANVAS_CENTER) % GRID_STEP_PX, 0)
+            self.assertEqual((y - CANVAS_CENTER) % GRID_STEP_PX, 0)
+
+
+class GridSnappedExactnessTests(unittest.TestCase):
+    """The reason snapping exists: no travel is silently discarded."""
+
+    def _net(self, commands, positive, negative):
+        return sum(cm if d == positive else -cm
+                   for d, cm in commands if d in (positive, negative))
+
+    def test_snapped_chain_commands_the_full_drawn_distance(self):
+        nodes = [snap_to_grid(37, 211), snap_to_grid(140, 96), snap_to_grid(305, 268)]
+        commands = path_to_commands(nodes, PX_PER_CM)
+        expected_x = (nodes[-1][0] - nodes[0][0]) / PX_PER_CM
+        expected_y = (nodes[0][1] - nodes[-1][1]) / PX_PER_CM
+        self.assertAlmostEqual(self._net(commands, "forward", "back"), expected_x)
+        self.assertAlmostEqual(self._net(commands, "up", "down"), expected_y)
+
+    def test_every_snapped_leg_is_a_whole_number_of_minimum_moves(self):
+        nodes = [snap_to_grid(12, 390), snap_to_grid(207, 118), snap_to_grid(377, 44)]
+        for direction, distance in path_to_commands(nodes, PX_PER_CM):
+            self.assertAlmostEqual(distance % 10, 0,
+                                   msg=f"{direction} {distance} is not a multiple of 10cm")
+
+
+class GridLinesTests(unittest.TestCase):
+    def test_line_count_spans_the_canvas(self):
+        self.assertEqual(len(grid_lines()), 13)
+
+    def test_centre_line_is_zero_and_major(self):
+        centre = [line for line in grid_lines() if line[0] == CANVAS_CENTER]
+        self.assertEqual(centre, [(CANVAS_CENTER, 0, True)])
+
+    def test_majors_are_every_thirty_cm(self):
+        majors = [cm for _, cm, major in grid_lines() if major]
+        self.assertEqual(majors, [-60, -30, 0, 30, 60])
+
+    def test_positions_stay_within_the_drawable_grid(self):
+        for position, _, _ in grid_lines():
+            self.assertGreaterEqual(position, GRID_MIN_PX)
+            self.assertLessEqual(position, GRID_MAX_PX)
+
+
+class CommandsToGhostPointsTests(unittest.TestCase):
+    def test_no_commands_gives_just_the_start(self):
+        self.assertEqual(commands_to_ghost_points([], (50, 200)), [(50, 200)])
+
+    def test_each_command_adds_one_point(self):
+        ghost = commands_to_ghost_points([("forward", 30.0), ("up", 30.0)], (50, 200))
+        self.assertEqual(ghost, [(50, 200), (140.0, 200), (140.0, 110.0)])
+
+    def test_back_and_down_move_the_other_way(self):
+        ghost = commands_to_ghost_points([("back", 10.0), ("down", 10.0)], (200, 200))
+        self.assertEqual(ghost, [(200, 200), (170.0, 200), (170.0, 230.0)])
+
+    def test_a_diagonal_leg_flies_as_an_L(self):
+        nodes = [(50, 200), (140, 110)]
+        ghost = commands_to_ghost_points(path_to_commands(nodes, PX_PER_CM), nodes[0])
+        self.assertEqual(ghost, [(50, 200), (140.0, 200), (140.0, 110.0)])
+        self.assertNotEqual(ghost, nodes)
+
+
+class FindHitTests(unittest.TestCase):
+    NODES = [(50, 200), (140, 200), (140, 110)]
+
+    def test_no_nodes_hits_nothing(self):
+        self.assertIsNone(find_hit([], 100, 100))
+
+    def test_first_and_last_nodes_are_ends(self):
+        self.assertEqual(find_hit(self.NODES, 50, 200), ("end", 0))
+        self.assertEqual(find_hit(self.NODES, 140, 110), ("end", 2))
+
+    def test_leg_midpoint_is_a_leg_hit(self):
+        self.assertEqual(find_hit(self.NODES, 95, 200), ("leg", 0))
+        self.assertEqual(find_hit(self.NODES, 140, 155), ("leg", 1))
+
+    def test_interior_node_is_not_an_end(self):
+        self.assertIsNone(find_hit(self.NODES, 140, 200))
+
+    def test_empty_space_hits_nothing(self):
+        self.assertIsNone(find_hit(self.NODES, 300, 300))
+
+    def test_ends_win_over_legs_on_a_one_cell_leg(self):
+        nodes = [(200, 200), (230, 200)]
+        self.assertEqual(find_hit(nodes, 201, 200), ("end", 0))
+        self.assertEqual(find_hit(nodes, 215, 200), ("leg", 0))
 
 
 if __name__ == "__main__":

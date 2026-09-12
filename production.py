@@ -10,10 +10,13 @@ See docs/superpowers/specs/2026-09-09-drag-drone-gui-design.md for the design.
 
 from __future__ import annotations
 
+import math
+
 from apexdrone import DIST_MAX_CM, DIST_MIN_CM
 from drone_worker import PlannedStep
 
-LINK = "ble"                     # "sim" to practise without a drone, "ble" to fly for real
+# LINK = "ble"                     # "sim" to practise without a drone, "ble" to fly for real
+LINK = "sim"                     # "sim" to practise without a drone, "ble" to fly for real
 DRONE = "APEX_USART_218001"      # your drone's name from scan_drones.py
 
 CANVAS_SIZE = 400
@@ -24,6 +27,15 @@ JOG_INTERVAL_MS = 150
 JOG_DURATION_S = 0.15
 JOG_MIN_POWER = 15              # offsets smaller than this percent of the radius are ignored
 JOG_MAX_POWER = 100
+
+GRID_STEP_CM = 10               # one grid cell, and the drone's smallest move
+GRID_STEP_PX = GRID_STEP_CM * PX_PER_CM
+GRID_MAJOR_EVERY = 3            # label every third line, so every 30cm
+HANDLE_HIT_PX = 12              # grab radius; must stay under half a cell
+CANVAS_CENTER = CANVAS_SIZE // 2
+GRID_STEPS_EACH_WAY = CANVAS_CENTER // GRID_STEP_PX
+GRID_MIN_PX = CANVAS_CENTER - GRID_STEPS_EACH_WAY * GRID_STEP_PX
+GRID_MAX_PX = CANVAS_CENTER + GRID_STEPS_EACH_WAY * GRID_STEP_PX
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +105,76 @@ def commands_to_steps(drone, commands: list[tuple[str, float]]) -> list[PlannedS
                     label=f"{direction} {dist:.0f}cm")
         for direction, dist in commands
     ]
+
+
+def snap_to_grid(x: float, y: float) -> tuple[int, int]:
+    """Snap a canvas point to the nearest 10cm grid intersection.
+
+    Every leg between snapped nodes then has axis deltas that are whole
+    multiples of DIST_MIN_CM, so path_to_commands emits each one exactly
+    instead of holding a sub-minimum remainder it discards on the next emit.
+    """
+    def axis(value: float) -> int:
+        steps = round((value - CANVAS_CENTER) / GRID_STEP_PX)
+        return max(GRID_MIN_PX,
+                   min(GRID_MAX_PX, CANVAS_CENTER + steps * GRID_STEP_PX))
+    return axis(x), axis(y)
+
+
+def grid_lines() -> list[tuple[int, int, bool]]:
+    """Every grid line as (position_px, cm_from_centre, is_major).
+
+    The geometry is identical for both axes, so the caller draws each entry
+    once vertically and once horizontally.
+    """
+    return [(CANVAS_CENTER + step * GRID_STEP_PX,
+             step * GRID_STEP_CM,
+             step % GRID_MAJOR_EVERY == 0)
+            for step in range(-GRID_STEPS_EACH_WAY, GRID_STEPS_EACH_WAY + 1)]
+
+
+def commands_to_ghost_points(commands: list[tuple[str, float]],
+                             start: tuple[float, float]) -> list[tuple[float, float]]:
+    """Trace where a command list actually takes the drone, in canvas px.
+
+    Each command moves one axis and they run one at a time, so a diagonal
+    leg becomes two points: the drone flies the horizontal, then the
+    vertical, never the diagonal that was drawn.
+    """
+    x, y = start
+    points = [(x, y)]
+    for direction, distance_cm in commands:
+        px = distance_cm * PX_PER_CM
+        if direction == "forward":
+            x += px
+        elif direction == "back":
+            x -= px
+        elif direction == "up":
+            y -= px
+        elif direction == "down":
+            y += px
+        points.append((x, y))
+    return points
+
+
+def find_hit(nodes: list[tuple[int, int]], x: float, y: float,
+             radius: float = HANDLE_HIT_PX) -> tuple[str, int] | None:
+    """What the user grabbed: ("end", index) for either end of the chain,
+    ("leg", index) for the midpoint of the leg starting at that index, or None.
+
+    Ends are checked first: on a one-cell leg the midpoint sits 15px from each
+    node, so a radius under 15 keeps the two unambiguous.
+    """
+    if not nodes:
+        return None
+    for index in (0, len(nodes) - 1):
+        node_x, node_y = nodes[index]
+        if math.hypot(x - node_x, y - node_y) <= radius:
+            return ("end", index)
+    for index, (a, b) in enumerate(zip(nodes, nodes[1:])):
+        if math.hypot(x - (a[0] + b[0]) / 2, y - (a[1] + b[1]) / 2) <= radius:
+            return ("leg", index)
+    return None
 
 
 import tkinter as tk
