@@ -221,6 +221,7 @@ class DroneGUI:
         self.canvas.bind("<ButtonPress-1>", self._on_canvas_press)
         self.canvas.bind("<B1-Motion>", self._on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
+        self.canvas.bind("<ButtonPress-3>", self._on_canvas_right_click)
 
         controls = ttk.Frame(self.root)
         controls.pack(fill="x", padx=8, pady=4)
@@ -374,6 +375,18 @@ class DroneGUI:
             for anchor in anchors:
                 self.canvas.create_line(*anchor, *preview, fill="gray",
                                          dash=(3, 3), tags="path")
+
+    def _on_canvas_right_click(self, event: tk.Event) -> None:
+        """Remove an end node, so one misplaced leg does not cost the whole chain."""
+        if self.mode.get() != "planning" or self.plan_running:
+            return
+        hit = find_hit(self.nodes, event.x, event.y)
+        if hit is None or hit[0] != "end":
+            return
+        self.nodes.pop(hit[1])
+        if len(self.nodes) < 2:
+            self.nodes = []   # a single node cannot be flown or extended
+        self._redraw_path()
 
     def _update_joystick(self, x: float, y: float) -> None:
         center = CANVAS_SIZE // 2
