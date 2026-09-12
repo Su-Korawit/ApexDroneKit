@@ -20,7 +20,6 @@ DRONE = "APEX_USART_218001"      # your drone's name from scan_drones.py
 
 CANVAS_SIZE = 400
 PX_PER_CM = 3
-WAYPOINT_MIN_PX = 20            # minimum drag distance before a new planning waypoint is recorded
 JOYSTICK_RADIUS_PX = 120
 JOG_INTERVAL_MS = 150
 JOG_DURATION_S = 0.15
@@ -346,7 +345,7 @@ class DroneGUI:
 
     def _redraw_path(self) -> None:
         self.canvas.delete("path")
-        if self.nodes:
+        if len(self.nodes) > 1:
             ghost = commands_to_ghost_points(
                 path_to_commands(self.nodes, PX_PER_CM), self.nodes[0])
             if len(ghost) > 1:
@@ -378,7 +377,7 @@ class DroneGUI:
 
     def _on_canvas_right_click(self, event: tk.Event) -> None:
         """Remove an end node, so one misplaced leg does not cost the whole chain."""
-        if self.mode.get() != "planning" or self.plan_running:
+        if self.mode.get() != "planning" or self.plan_running or self._drag is not None:
             return
         hit = find_hit(self.nodes, event.x, event.y)
         if hit is None or hit[0] != "end":
